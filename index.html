@@ -15,6 +15,10 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Nunito:wght@600;700;800;900&amp;display=swap" rel="stylesheet">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase: histórico em tempo real e login do administrador -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -131,6 +135,10 @@
             </div>
 
             <form onsubmit="handleAdminLogin(event)" class="space-y-4 mt-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1.5">E-mail do Administrador</label>
+                    <input type="email" id="admin-email-input" placeholder="seu@email.com" autocomplete="username" class="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#009fe3] focus:bg-white" required="">
+                </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-700 mb-1.5">Senha de Administrador</label>
                     <input type="password" id="admin-password-input" placeholder="Digite a senha..." class="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#009fe3] focus:bg-white" required="">
@@ -593,7 +601,7 @@
                         <div class="flex-grow">
                             <label class="block text-[11px] font-bold text-slate-600 uppercase">Alterar Senha do Admin</label>
                             <input type="password" id="new-admin-pass" placeholder="Nova senha..." class="mt-1 w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[#009fe3]">
-                            <p class="mt-1.5 text-[10px] text-slate-500 leading-snug">Para valer em outros aparelhos, publique o site atualizado depois de alterar a senha.</p>
+                            <p class="mt-1.5 text-[10px] text-slate-500 leading-snug">A senha é a da conta de administrador e vale para todos os aparelhos.</p>
                         </div>
                         <button type="button" onclick="changeAdminPassword()" class="mt-4 px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg shrink-0 cursor-pointer">
                             Alterar
@@ -685,7 +693,7 @@
                     </button>
                 </div>
                 <p class="text-[11px] text-slate-500">
-                    Consultas registradas neste navegador: fornecimento consultado, IPVS, data e horário. Ao baixar o site atualizado, o histórico é mantido no arquivo gerado.
+                    Consultas de todos os aparelhos, atualizadas em tempo real: fornecimento consultado, IPVS, data e horário.
                 </p>
                 <p id="historico-aviso" class="text-[11px] text-amber-700 font-semibold"></p>
                 <div class="overflow-x-auto border border-slate-200 rounded-xl max-h-80">
@@ -960,13 +968,6 @@
 
         // 2. BASE DE DADOS E NORMALIZAÇÃO AUTOMÁTICA (SEM TRAÇOS E SEM ZEROS À ESQUERDA)
         const DB_STORAGE_KEY = "portal_ipvs_fornecimento_db_v1";
-        const PASS_STORAGE_KEY = "portal_ipvs_admin_pass_v1";
-        // A senha nunca fica em texto puro: o site guarda somente o hash SHA-256.
-        const ADMIN_HASH_STORAGE_KEY = "portal_ipvs_admin_hash_v2";
-        /*__ADMIN_HASH_START__*/
-        const ADMIN_HASH_EMBUTIDO = "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9";
-        /*__ADMIN_HASH_END__*/
-        let adminHashAtual = ADMIN_HASH_EMBUTIDO;
 
         /*__EMBEDDED_DB_START__*/
         const DEFAULT_DB_COMPACTO = [
@@ -1065443,9 +1065444,6 @@
         /*__EMBEDDED_DB_END__*/
         const DEFAULT_DB = DEFAULT_DB_COMPACTO.map(([fornecimento, ipvs]) => ({ fornecimento, ipvs }));
 
-        /*__HISTORICO_CONSULTAS_START__*/
-        const DEFAULT_HISTORICO = [];
-        /*__HISTORICO_CONSULTAS_END__*/
 
         let database = [];
         let isAdminAuthenticated = false;
@@ -1065946,33 +1065944,6 @@
         }
 
         // 5. AUTENTICAÇÃO E PAINEL DO ADMINISTRADOR
-        async function sha256Hex(texto) {
-            const bytes = new TextEncoder().encode(String(texto));
-            const digest = await crypto.subtle.digest("SHA-256", bytes);
-            return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
-        }
-
-        async function loadAdminHash() {
-            try {
-                const salvo = localStorage.getItem(ADMIN_HASH_STORAGE_KEY);
-                if (salvo) {
-                    adminHashAtual = salvo;
-                    return;
-                }
-                // Migração: versões anteriores guardavam a senha em texto puro neste navegador
-                const legado = localStorage.getItem(PASS_STORAGE_KEY);
-                if (legado) {
-                    adminHashAtual = await sha256Hex(legado);
-                    localStorage.setItem(ADMIN_HASH_STORAGE_KEY, adminHashAtual);
-                    localStorage.removeItem(PASS_STORAGE_KEY);
-                    return;
-                }
-            } catch (err) {
-                console.error("Erro ao carregar a senha do administrador:", err);
-            }
-            adminHashAtual = ADMIN_HASH_EMBUTIDO;
-        }
-
         function openAdminModal() {
             if (isAdminAuthenticated) {
                 switchView('admin');
@@ -1065988,53 +1065959,68 @@
             document.getElementById('admin-login-modal').classList.add('hidden');
         }
 
+        function mensagemErroLogin(err) {
+            if (err && err.code === 'auth/network-request-failed') return 'Sem conexão com a internet.';
+            if (err && err.code === 'auth/too-many-requests') return 'Muitas tentativas. Aguarde alguns minutos.';
+            return 'E-mail ou senha incorretos.';
+        }
+
         async function handleAdminLogin(e) {
             e.preventDefault();
-            const inputPass = document.getElementById('admin-password-input').value;
-            let senhaCorreta = false;
-            try {
-                senhaCorreta = (await sha256Hex(inputPass)) === adminHashAtual;
-            } catch (err) {
-                console.error("Erro ao verificar a senha:", err);
-                showToast("Não foi possível verificar a senha neste navegador.");
+            const email = document.getElementById('admin-email-input').value.trim();
+            const senha = document.getElementById('admin-password-input').value;
+            const erro = document.getElementById('login-error-msg');
+            if (!fbAuth) {
+                erro.textContent = 'Login indisponível: o Firebase ainda não está configurado.';
+                erro.classList.remove('hidden');
                 return;
             }
-            if (senhaCorreta) {
-                isAdminAuthenticated = true;
-                closeAdminModal();
-                document.getElementById('admin-nav-controls').classList.remove('hidden');
-                switchView('admin');
-                showToast("Modo Administrador ativado.");
-            } else {
-                document.getElementById('login-error-msg').classList.remove('hidden');
+            try {
+                await fbAuth.signInWithEmailAndPassword(email, senha);
+            } catch (err) {
+                console.error('Erro no login:', err);
+                erro.textContent = mensagemErroLogin(err);
+                erro.classList.remove('hidden');
+                return;
             }
+            erro.classList.add('hidden');
+            isAdminAuthenticated = true;
+            closeAdminModal();
+            document.getElementById('admin-nav-controls').classList.remove('hidden');
+            switchView('admin');
+            showToast("Modo Administrador ativado.");
         }
 
         function logoutAdmin() {
             isAdminAuthenticated = false;
             document.getElementById('admin-nav-controls').classList.add('hidden');
+            pararEscutaHistorico();
+            if (fbAuth) fbAuth.signOut().catch(err => console.error('Erro ao sair:', err));
             switchView('consulta');
             showToast("Sessão de administrador encerrada.");
         }
 
         async function changeAdminPassword() {
-            const newPass = document.getElementById('new-admin-pass').value.trim();
-            if (!newPass || newPass.length < 4) {
-                showToast("Informe uma nova senha com pelo menos 4 caracteres.");
+            const novaSenha = document.getElementById('new-admin-pass').value;
+            if (!novaSenha || novaSenha.length < 6) {
+                showToast("Informe uma nova senha com pelo menos 6 caracteres.");
+                return;
+            }
+            const user = fbAuth && fbAuth.currentUser;
+            if (!user) {
+                showToast("Entre como administrador para alterar a senha.");
                 return;
             }
             try {
-                const novoHash = await sha256Hex(newPass);
-                localStorage.setItem(ADMIN_HASH_STORAGE_KEY, novoHash);
-                localStorage.removeItem(PASS_STORAGE_KEY);
-                adminHashAtual = novoHash;
+                await user.updatePassword(novaSenha);
+                document.getElementById('new-admin-pass').value = '';
+                showToast("Senha do administrador alterada com sucesso!");
             } catch (err) {
-                console.error("Erro ao salvar a nova senha:", err);
-                showToast("Não foi possível salvar a nova senha neste navegador.");
-                return;
+                console.error('Erro ao alterar a senha:', err);
+                showToast(err && err.code === 'auth/requires-recent-login'
+                    ? "Saia e entre novamente para trocar a senha."
+                    : "Não foi possível alterar a senha.");
             }
-            document.getElementById('new-admin-pass').value = '';
-            showToast("Senha alterada. Baixe e publique o site atualizado para usar em outros aparelhos.");
         }
 
         function switchView(viewName) {
@@ -1066242,55 +1066228,97 @@
             showToast("Planilha modelo (.CSV) baixada!");
         }
 
-        // 5A. HISTÓRICO DE CONSULTAS (fornecimento, IPVS, data e horário)
-        const HISTORICO_STORAGE_KEY = "portal_ipvs_historico_consultas_v1";
-        const HISTORICO_LIMPO_EM_KEY = "portal_ipvs_historico_limpo_em_v1";
+        // 5A. HISTÓRICO DE CONSULTAS EM TEMPO REAL (Firebase Firestore)
+        // Preencha com os dados do seu projeto: Configurações do projeto > Seus apps > firebaseConfig.
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyAbkbxnD641gtbs12FfcqjS3Re3srGWb24",
+            authDomain: "consulta-ipvs.firebaseapp.com",
+            projectId: "consulta-ipvs",
+            storageBucket: "consulta-ipvs.firebasestorage.app",
+            messagingSenderId: "53168222766",
+            appId: "1:53168222766:web:cfd048099b1a16b36025bf"
+        };
+        const FIREBASE_COLECAO_CONSULTAS = "consultas";
         const HISTORICO_LIMITE_TELA = 500;
         const XLSX_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
         let historicoConsultas = [];
+        let fbDb = null;
+        let fbAuth = null;
+        let fbPararEscuta = null;
 
-        function loadHistoricoConsultas() {
-            // Junta o histórico embutido no arquivo com o salvo neste navegador (sem duplicar)
-            let salvo = [];
-            let limpoEm = "";
-            try {
-                const parsed = JSON.parse(localStorage.getItem(HISTORICO_STORAGE_KEY) || "[]");
-                if (Array.isArray(parsed)) salvo = parsed;
-                limpoEm = localStorage.getItem(HISTORICO_LIMPO_EM_KEY) || "";
-            } catch (err) {
-                salvo = [];
-            }
-            const porId = new Map();
-            const embutido = Array.isArray(DEFAULT_HISTORICO) ? DEFAULT_HISTORICO : [];
-            [...embutido, ...salvo].forEach(item => {
-                if (!item || !item.id || !item.dataHora) return;
-                // ignora registros anteriores à última limpeza feita neste navegador
-                if (limpoEm && item.dataHora <= limpoEm) return;
-                porId.set(item.id, item);
-            });
-            historicoConsultas = [...porId.values()].sort((a, b) => b.dataHora.localeCompare(a.dataHora));
+        function firebaseConfigurado() {
+            return typeof firebase !== 'undefined' && !!FIREBASE_CONFIG.apiKey && !String(FIREBASE_CONFIG.apiKey).startsWith('COLE_');
         }
 
-        function saveHistoricoConsultas() {
-            try {
-                localStorage.setItem(HISTORICO_STORAGE_KEY, JSON.stringify(historicoConsultas));
-            } catch (err) {
-                console.error("Erro ao salvar o histórico de consultas:", err);
+        function iniciarFirebase() {
+            if (!firebaseConfigurado()) {
+                console.warn('Firebase não configurado: histórico e login do administrador indisponíveis.');
+                return;
             }
+            try {
+                if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+                fbDb = firebase.firestore();
+                fbAuth = firebase.auth();
+                // A sessão não fica guardada: ao abrir o site, o painel sempre começa na consulta
+                fbAuth.setPersistence(firebase.auth.Auth.Persistence.NONE)
+                    .catch(err => console.error('Erro ao configurar a sessão:', err));
+                fbAuth.onAuthStateChanged(user => {
+                    if (user) {
+                        iniciarEscutaHistorico();
+                    } else {
+                        pararEscutaHistorico();
+                        if (isAdminAuthenticated) {
+                            isAdminAuthenticated = false;
+                            document.getElementById('admin-nav-controls').classList.add('hidden');
+                            switchView('consulta');
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error('Erro ao iniciar o Firebase:', err);
+                fbDb = null;
+                fbAuth = null;
+            }
+        }
+
+        function iniciarEscutaHistorico() {
+            if (!fbDb || fbPararEscuta) return;
+            fbPararEscuta = fbDb.collection(FIREBASE_COLECAO_CONSULTAS)
+                .orderBy('dataHora', 'desc')
+                .onSnapshot(snapshot => {
+                    historicoConsultas = snapshot.docs.map(doc => {
+                        const d = doc.data();
+                        return {
+                            id: doc.id,
+                            fornecimento: d.fornecimento,
+                            ipvs: (d.ipvs === null || d.ipvs === undefined) ? null : d.ipvs,
+                            dataHora: d.dataHora ? d.dataHora.toDate().toISOString() : new Date().toISOString()
+                        };
+                    });
+                    renderHistoricoConsultas();
+                }, err => {
+                    console.error('Erro ao ler o histórico:', err);
+                    showToast('Não foi possível carregar o histórico. Verifique as regras do Firebase.');
+                });
+        }
+
+        function pararEscutaHistorico() {
+            if (fbPararEscuta) {
+                fbPararEscuta();
+                fbPararEscuta = null;
+            }
+            historicoConsultas = [];
+            renderHistoricoConsultas();
         }
 
         function registrarConsulta(fornecimento, ipvs) {
             const valor = String(fornecimento).replace(/[^a-zA-Z0-9]/g, '');
-            if (!valor) return;
-            const agora = new Date();
-            historicoConsultas.unshift({
-                id: `c_${agora.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
+            if (!valor || !fbDb) return;
+            fbDb.collection(FIREBASE_COLECAO_CONSULTAS).add({
                 fornecimento: valor,
                 ipvs: (ipvs === null || ipvs === undefined) ? null : Number(ipvs),
-                dataHora: agora.toISOString()
-            });
-            saveHistoricoConsultas();
-            renderHistoricoConsultas();
+                dataHora: firebase.firestore.Timestamp.now()
+            }).catch(err => console.error('Erro ao registrar consulta:', err));
         }
 
         function renderHistoricoConsultas() {
@@ -1066320,17 +1066348,25 @@
             }
         }
 
-        function limparHistoricoConsultas() {
-            if (!confirm("Apagar todo o histórico de consultas registrado neste navegador?")) return;
-            historicoConsultas = [];
-            try {
-                localStorage.setItem(HISTORICO_LIMPO_EM_KEY, new Date().toISOString());
-            } catch (err) {
-                console.error("Erro ao registrar a limpeza do histórico:", err);
+        async function limparHistoricoConsultas() {
+            if (!fbDb || !fbAuth || !fbAuth.currentUser) {
+                showToast("Entre como administrador para limpar o histórico.");
+                return;
             }
-            saveHistoricoConsultas();
-            renderHistoricoConsultas();
-            showToast("Histórico de consultas apagado.");
+            if (!confirm("Apagar todo o histórico de consultas de todos os aparelhos?")) return;
+            try {
+                const snapshot = await fbDb.collection(FIREBASE_COLECAO_CONSULTAS).get();
+                const docs = snapshot.docs;
+                for (let i = 0; i < docs.length; i += 400) {
+                    const lote = fbDb.batch();
+                    docs.slice(i, i + 400).forEach(doc => lote.delete(doc.ref));
+                    await lote.commit();
+                }
+                showToast("Histórico de consultas apagado.");
+            } catch (err) {
+                console.error('Erro ao apagar o histórico:', err);
+                showToast("Não foi possível apagar o histórico.");
+            }
         }
 
         function carregarBibliotecaXLSX() {
@@ -1066436,11 +1066472,6 @@
             let fullHtml = clone.outerHTML;
             const newDbCode = `/*__EMBEDDED_DB_START__*/\n        const DEFAULT_DB_COMPACTO = [\n${database.map(r => JSON.stringify([String(r.fornecimento), r.ipvs])).join(',\n')}\n];\n        /*__EMBEDDED_DB_END__*/`;
             fullHtml = fullHtml.replace(/\/\*__EMBEDDED_DB_START__\*\/[\s\S]*?\/\*__EMBEDDED_DB_END__\*\//, () => newDbCode);
-            const historicoCode = `/*__HISTORICO_CONSULTAS_START__*/\n        const DEFAULT_HISTORICO = ${JSON.stringify(historicoConsultas).replace(/</g, '\\u003c')};\n        /*__HISTORICO_CONSULTAS_END__*/`;
-            fullHtml = fullHtml.replace(/\/\*__HISTORICO_CONSULTAS_START__\*\/[\s\S]*?\/\*__HISTORICO_CONSULTAS_END__\*\//, () => historicoCode);
-            const adminCode = `/*__ADMIN_HASH_START__*/\n        const ADMIN_HASH_EMBUTIDO = "${adminHashAtual}";\n        /*__ADMIN_HASH_END__*/`;
-            fullHtml = fullHtml.replace(/\/\*__ADMIN_HASH_START__\*\/[\s\S]*?\/\*__ADMIN_HASH_END__\*\//, () => adminCode);
-
             const blob = new Blob(["<!DOCTYPE html>\n" + fullHtml], { type: "text/html;charset=utf-8;" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
@@ -1066512,9 +1066543,8 @@
             document.getElementById('admin-login-modal').classList.add('hidden');
             switchView('consulta');
             loadDatabase();
-            loadHistoricoConsultas();
+            iniciarFirebase();
             renderHistoricoConsultas();
-            loadAdminHash();
             renderScaleReference();
             renderBillGuideIllustrations();
             lucide.createIcons();
